@@ -23,13 +23,18 @@
 {%- if label is not none %}
  \label{{label}}
 {%- endif %} \\
+{% else %}
+{%- set label = parse_table(table_styles, 'label') %}
+{%- if label is not none %}
+\label{{label}} \\
+{% endif %}
 {% endif %}
 {% set toprule = parse_table(table_styles, 'toprule') %}
 {% if toprule is not none %}
 \{{toprule}}
 {% endif %}
 {% for row in head %}
-{% for c in row %}{%- if not loop.first %} & {% endif %}{{parse_header(c, multirow_align, multicol_align, True)}}{% endfor %} \\
+{% for c in row %}{%- if not loop.first %} & {% endif %}{{parse_header(c, multirow_align, multicol_align, siunitx)}}{% endfor %} \\
 {% endfor %}
 {% set midrule = parse_table(table_styles, 'midrule') %}
 {% if midrule is not none %}
@@ -45,7 +50,7 @@
 \{{toprule}}
 {% endif %}
 {% for row in head %}
-{% for c in row %}{%- if not loop.first %} & {% endif %}{{parse_header(c, multirow_align, multicol_align, True)}}{% endfor %} \\
+{% for c in row %}{%- if not loop.first %} & {% endif %}{{parse_header(c, multirow_align, multicol_align, siunitx)}}{% endfor %} \\
 {% endfor %}
 {% if midrule is not none %}
 \{{midrule}}
@@ -68,6 +73,10 @@
 {% for c in row %}{% if not loop.first %} & {% endif %}
   {%- if c.type == 'th' %}{{parse_header(c, multirow_align, multicol_align)}}{% else %}{{parse_cell(c.cellstyle, c.display_value, convert_css)}}{% endif %}
 {%- endfor %} \\
+{% if clines and clines[loop.index] | length > 0 %}
+  {%- for cline in clines[loop.index] %}{% if not loop.first %} {% endif %}{{ cline }}{% endfor %}
+
+{% endif %}
 {% endfor %}
 \end{longtable}
 {% raw %}{% endraw %}

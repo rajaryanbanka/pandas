@@ -7,6 +7,7 @@ from functools import partial
 from io import (
     BytesIO,
     StringIO,
+    UnsupportedOperation,
 )
 import mmap
 import os
@@ -99,22 +100,9 @@ bar2,12,13,14,15
             with fsspec.open(f"file://{path}", mode="wb") as fsspec_obj:
                 assert fsspec_obj == icom.stringify_path(fsspec_obj)
 
-    @pytest.mark.parametrize(
-        "extension,expected",
-        [
-            ("", None),
-            (".gz", "gzip"),
-            (".bz2", "bz2"),
-            (".zip", "zip"),
-            (".xz", "xz"),
-            (".GZ", "gzip"),
-            (".BZ2", "bz2"),
-            (".ZIP", "zip"),
-            (".XZ", "xz"),
-        ],
-    )
     @pytest.mark.parametrize("path_type", path_types)
-    def test_infer_compression_from_path(self, extension, expected, path_type):
+    def test_infer_compression_from_path(self, compression_format, path_type):
+        extension, expected = compression_format
         path = path_type("foo/bar.csv" + extension)
         compression = icom.infer_compression(path, compression="infer")
         assert compression == expected
@@ -195,7 +183,7 @@ Look,a snake,🐍"""
             (pd.read_csv, "os", FileNotFoundError, "csv"),
             (pd.read_fwf, "os", FileNotFoundError, "txt"),
             (pd.read_excel, "xlrd", FileNotFoundError, "xlsx"),
-            (pd.read_feather, "pyarrow", IOError, "feather"),
+            (pd.read_feather, "pyarrow", OSError, "feather"),
             (pd.read_hdf, "tables", FileNotFoundError, "h5"),
             (pd.read_stata, "os", FileNotFoundError, "dta"),
             (pd.read_sas, "os", FileNotFoundError, "sas7bdat"),
@@ -228,13 +216,40 @@ Look,a snake,🐍"""
             reader(path)
 
     @pytest.mark.parametrize(
+        "method, module, error_class, fn_ext",
+        [
+            (pd.DataFrame.to_csv, "os", OSError, "csv"),
+            (pd.DataFrame.to_html, "os", OSError, "html"),
+            (pd.DataFrame.to_excel, "xlrd", OSError, "xlsx"),
+            (pd.DataFrame.to_feather, "pyarrow", OSError, "feather"),
+            (pd.DataFrame.to_parquet, "pyarrow", OSError, "parquet"),
+            (pd.DataFrame.to_stata, "os", OSError, "dta"),
+            (pd.DataFrame.to_json, "os", OSError, "json"),
+            (pd.DataFrame.to_pickle, "os", OSError, "pickle"),
+        ],
+    )
+    # NOTE: Missing parent directory for pd.DataFrame.to_hdf is handled by PyTables
+    def test_write_missing_parent_directory(self, method, module, error_class, fn_ext):
+        pytest.importorskip(module)
+
+        dummy_frame = pd.DataFrame({"a": [1, 2, 3], "b": [2, 3, 4], "c": [3, 4, 5]})
+
+        path = os.path.join(HERE, "data", "missing_folder", "does_not_exist." + fn_ext)
+
+        with pytest.raises(
+            error_class,
+            match=r"Cannot save file into a non-existent directory: .*missing_folder",
+        ):
+            method(dummy_frame, path)
+
+    @pytest.mark.parametrize(
         "reader, module, error_class, fn_ext",
         [
             (pd.read_csv, "os", FileNotFoundError, "csv"),
             (pd.read_table, "os", FileNotFoundError, "csv"),
             (pd.read_fwf, "os", FileNotFoundError, "txt"),
             (pd.read_excel, "xlrd", FileNotFoundError, "xlsx"),
-            (pd.read_feather, "pyarrow", IOError, "feather"),
+            (pd.read_feather, "pyarrow", OSError, "feather"),
             (pd.read_hdf, "tables", FileNotFoundError, "h5"),
             (pd.read_stata, "os", FileNotFoundError, "dta"),
             (pd.read_sas, "os", FileNotFoundError, "sas7bdat"),
@@ -321,6 +336,7 @@ Look,a snake,🐍"""
         else:
             tm.assert_frame_equal(result, expected)
 
+    @pytest.mark.filterwarnings("ignore:In future versions `DataFrame.to_latex`")
     @pytest.mark.parametrize(
         "writer_name, writer_kwargs, module",
         [
@@ -357,7 +373,6 @@ Look,a snake,🐍"""
     @pytest.mark.filterwarnings(  # pytables np.object usage
         "ignore:`np.object` is a deprecated alias:DeprecationWarning"
     )
-    @td.skip_array_manager_not_yet_implemented  # TODO(ArrayManager) IO HDF5
     def test_write_fspath_hdf5(self):
         # Same test as write_fspath_all, except HDF5 files aren't
         # necessarily byte-for-byte identical for a given dataframe, so we'll
@@ -479,6 +494,11 @@ def test_is_fsspec_url():
     assert not icom.is_fsspec_url("random:pandas/somethingelse.com")
     assert not icom.is_fsspec_url("/local/path")
     assert not icom.is_fsspec_url("relative/local/path")
+    # fsspec URL in string should not be recognized
+    assert not icom.is_fsspec_url("this is not fsspec://url")
+    assert not icom.is_fsspec_url("{'url': 'gs://pandas/somethingelse.com'}")
+    # accept everything that conforms to RFC 3986 schema
+    assert icom.is_fsspec_url("RFC-3986+compliant.spec://something")
 
 
 @pytest.mark.parametrize("encoding", [None, "utf-8"])
@@ -535,9 +555,8 @@ def test_encoding_errors(encoding_errors, format):
     bad_encoding = b"\xe4"
 
     if format == "csv":
-        return
-        content = bad_encoding + b"\n" + bad_encoding
-        reader = pd.read_csv
+        content = b"," + bad_encoding + b"\n" + bad_encoding * 2 + b"," + bad_encoding
+        reader = partial(pd.read_csv, index_col=0)
     else:
         content = (
             b'{"'
@@ -566,7 +585,7 @@ def test_encoding_errors(encoding_errors, format):
 def test_bad_encdoing_errors():
     # GH 39777
     with tm.ensure_clean() as path:
-        with pytest.raises(ValueError, match="Invalid value for `encoding_errors`"):
+        with pytest.raises(LookupError, match="unknown error handler name"):
             icom.get_handle(path, "w", errors="bad")
 
 
@@ -575,3 +594,9 @@ def test_errno_attribute():
     with pytest.raises(FileNotFoundError, match="\\[Errno 2\\]") as err:
         pd.read_csv("doesnt_exist")
         assert err.errno == errno.ENOENT
+
+
+def test_fail_mmap():
+    with pytest.raises(UnsupportedOperation, match="fileno"):
+        with BytesIO() as buffer:
+            icom.get_handle(buffer, "rb", memory_map=True)
